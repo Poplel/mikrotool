@@ -1,0 +1,11 @@
+# Ignore everything by default
+/*
+
+# Track only the source files for the project
+!/.gitignore
+!/AppIcon.go
+!/README.md
+!/go.mod
+!/go.sum
+!/icon.png
+!/main.go
