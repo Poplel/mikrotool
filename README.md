@@ -1,2 +1,2 @@
-# sshwgadder
-Adds wireguard peer to mikrotik over ssh and generates client config
+# mikrotool
+Allows quick connecting to a mikrotik router with a neat address book 
