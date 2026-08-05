@@ -805,7 +805,7 @@ func (ui *mikrotoolUI) toggleWireGuard() {
 	site := model.Site{IP: ui.ipEntry.Text, CompanyCode: ui.companyEntry.Text, Name: ui.nameEntry.Text}.Normalized()
 	if runtime.GOOS == "darwin" && !ui.app.Preferences().Bool(prefMacAuthExplained) {
 		ui.recordAction("Displayed the macOS authorization explanation.")
-		message := "Mikrotool uses macOS's built-in osascript utility to request temporary administrator rights for the network changes required by WireGuard. macOS—not Mikrotool—collects your password. Normal use should require one authorization while connecting and one while disconnecting."
+		message := "Mikrotool uses macOS's built-in osascript utility to request temporary administrator rights for the network changes required by WireGuard. macOS—not Mikrotool—collects your password. One authorization starts a temporary privileged session that also handles disconnect and cleanup; Mikrotool does not retain administrator access afterward."
 		dialog.ShowConfirm("macOS Authorization", message+"\n\nContinue?", func(ok bool) {
 			if !ok {
 				ui.setStatus("WireGuard connection cancelled.")

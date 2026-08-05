@@ -3,7 +3,7 @@ Icon = "Icon.png"
 Name = "Mikrotool"
 ID = "com.wirestar.mikrotool"
 Version = "2.0.0"
-Build = 16
+Build = 20
 
 [Release]
 BuildName = "mikrotool"
