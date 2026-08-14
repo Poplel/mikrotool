@@ -20,6 +20,7 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
+	"mikrotool/internal/deeplink"
 	"mikrotool/internal/inputcheck"
 	"mikrotool/internal/model"
 	"mikrotool/internal/router"
@@ -54,14 +55,14 @@ type mikrotoolUI struct {
 	knownHosts  *sshclient.KnownHosts
 	tunnels     *tunnel.Backend
 
-	ipEntry      *widget.Entry
-	companyEntry *widget.Entry
-	nameEntry    *widget.Entry
-	status       *widget.Label
-	siteList     *widget.List
-	wgButton     *widget.Button
-	searchEntry  *widget.Entry
-	sortButtons  map[siteSortField]*widget.Button
+	ipEntry     *widget.Entry
+	siteIDEntry *widget.Entry
+	nameEntry   *widget.Entry
+	status      *widget.Label
+	siteList    *widget.List
+	wgButton    *widget.Button
+	searchEntry *widget.Entry
+	sortButtons map[siteSortField]*widget.Button
 
 	sites         []model.Site
 	siteRows      []siteListRow
@@ -94,7 +95,7 @@ func newMikrotoolUI(application fyne.App, window fyne.Window, dataDir string) *m
 		knownHosts:    sshclient.NewKnownHosts(filepath.Join(dataDir, "known_hosts")),
 		tunnels:       tunnel.New(dataDir),
 		ipEntry:       widget.NewEntry(),
-		companyEntry:  widget.NewEntry(),
+		siteIDEntry:   widget.NewEntry(),
 		nameEntry:     widget.NewEntry(),
 		status:        widget.NewLabel("Ready."),
 		sortField:     sortBySiteName,
@@ -106,7 +107,7 @@ func newMikrotoolUI(application fyne.App, window fyne.Window, dataDir string) *m
 	})
 	ui.loadSites()
 	ui.createSiteList()
-	ui.recordAction("Mikrotool v2.0 started.")
+	ui.recordAction("Mikrotool v2.1 started.")
 	return ui
 }
 
@@ -117,7 +118,7 @@ func (ui *mikrotoolUI) mainPage() fyne.CanvasObject {
 
 	form := widget.NewForm(
 		widget.NewFormItem("IP Address", ui.fieldWithCopy(ui.ipEntry)),
-		widget.NewFormItem("Company Code", ui.fieldWithCopy(ui.companyEntry)),
+		widget.NewFormItem("Site ID", ui.fieldWithCopy(ui.siteIDEntry)),
 		widget.NewFormItem("Site Name", ui.fieldWithCopy(ui.nameEntry)),
 	)
 
@@ -191,7 +192,7 @@ func (ui *mikrotoolUI) createSiteList() {
 				return
 			}
 			site := ui.sites[row.siteIndex]
-			values := []string{site.IP, site.CompanyCode, site.Name}
+			values := []string{site.IP, site.SiteID, site.Name}
 			for column := range 3 {
 				cell := cells.Objects[column].(*editableCell)
 				columnCopy := column
@@ -219,12 +220,12 @@ func (ui *mikrotoolUI) createSiteList() {
 func (ui *mikrotoolUI) siteListHeader() fyne.CanvasObject {
 	ui.sortButtons = make(map[siteSortField]*widget.Button, 3)
 	labels := map[siteSortField]string{
-		sortByIP:          "IP Address",
-		sortByCompanyCode: "Company Code",
-		sortBySiteName:    "Site Name",
+		sortByIP:       "IP Address",
+		sortBySiteID:   "Site ID",
+		sortBySiteName: "Site Name",
 	}
 	objects := make([]fyne.CanvasObject, 0, 3)
-	for _, field := range []siteSortField{sortByIP, sortByCompanyCode, sortBySiteName} {
+	for _, field := range []siteSortField{sortByIP, sortBySiteID, sortBySiteName} {
 		fieldCopy := field
 		button := widget.NewButton("", func() { ui.setSiteSort(fieldCopy) })
 		button.Importance = widget.LowImportance
@@ -257,22 +258,22 @@ func (ui *mikrotoolUI) setSiteSort(field siteSortField) {
 		ui.sortAscending = true
 	}
 	ui.refreshSortButtonLabels(map[siteSortField]string{
-		sortByIP:          "IP Address",
-		sortByCompanyCode: "Company Code",
-		sortBySiteName:    "Site Name",
+		sortByIP:       "IP Address",
+		sortBySiteID:   "Site ID",
+		sortBySiteName: "Site Name",
 	})
 	ui.refreshSiteList("")
 }
 
-func (ui *mikrotoolUI) refreshSiteList(selectCompanyCode string) {
+func (ui *mikrotoolUI) refreshSiteList(selectSiteID string) {
 	ui.siteRows = buildSiteListRows(ui.sites, ui.sortField, ui.sortAscending)
 	ui.siteList.Refresh()
 	ui.siteList.UnselectAll()
-	if selectCompanyCode == "" {
+	if selectSiteID == "" {
 		return
 	}
 	for rowID, row := range ui.siteRows {
-		if row.siteIndex >= 0 && model.SameCompanyCode(ui.sites[row.siteIndex].CompanyCode, selectCompanyCode) {
+		if row.siteIndex >= 0 && model.SameSiteID(ui.sites[row.siteIndex].SiteID, selectSiteID) {
 			ui.siteList.Select(rowID)
 			ui.siteList.ScrollTo(rowID)
 			return
@@ -299,32 +300,33 @@ func (ui *mikrotoolUI) showSiteMenu(siteIndex int, cell fyne.CanvasObject, event
 	if siteIndex < 0 || siteIndex >= len(ui.sites) {
 		return
 	}
-	companyCode := ui.sites[siteIndex].CompanyCode
-	menu := fyne.NewMenu("", fyne.NewMenuItem("Delete", func() {
-		ui.confirmDeleteSite(companyCode)
-	}))
+	site := ui.sites[siteIndex]
+	menu := fyne.NewMenu("",
+		fyne.NewMenuItem("Copy Link", func() { ui.copySiteLink(site) }),
+		fyne.NewMenuItem("Delete", func() { ui.confirmDeleteSite(site.SiteID) }),
+	)
 	widget.ShowPopUpMenuAtRelativePosition(menu, ui.window.Canvas(), event.Position, cell)
 }
 
-func (ui *mikrotoolUI) confirmDeleteSite(companyCode string) {
+func (ui *mikrotoolUI) confirmDeleteSite(siteID string) {
 	for _, site := range ui.sites {
-		if !model.SameCompanyCode(site.CompanyCode, companyCode) {
+		if !model.SameSiteID(site.SiteID, siteID) {
 			continue
 		}
 		dialog.ShowConfirm("Delete Site", "Delete "+site.Name+"?", func(confirmed bool) {
 			if confirmed {
-				ui.deleteSite(companyCode)
+				ui.deleteSite(siteID)
 			}
 		}, ui.window)
 		return
 	}
 }
 
-func (ui *mikrotoolUI) deleteSite(companyCode string) {
+func (ui *mikrotoolUI) deleteSite(siteID string) {
 	next := make([]model.Site, 0, len(ui.sites))
 	deletedName := ""
 	for _, site := range ui.sites {
-		if deletedName == "" && model.SameCompanyCode(site.CompanyCode, companyCode) {
+		if deletedName == "" && model.SameSiteID(site.SiteID, siteID) {
 			deletedName = site.Name
 			continue
 		}
@@ -350,12 +352,12 @@ func (ui *mikrotoolUI) selectSite(id int) {
 	}
 	site := ui.sites[id]
 	ui.ipEntry.SetText(site.IP)
-	ui.companyEntry.SetText(site.CompanyCode)
+	ui.siteIDEntry.SetText(site.SiteID)
 	ui.nameEntry.SetText(site.Name)
 }
 
 func (ui *mikrotoolUI) saveSite() {
-	site := model.Site{IP: ui.ipEntry.Text, CompanyCode: ui.companyEntry.Text, Name: ui.nameEntry.Text}
+	site := model.Site{IP: ui.ipEntry.Text, SiteID: ui.siteIDEntry.Text, Name: ui.nameEntry.Text}
 	next, updated, err := ui.sitesStore.Upsert(ui.sites, site)
 	if err != nil {
 		ui.recordAction("Site save failed: " + err.Error())
@@ -363,12 +365,107 @@ func (ui *mikrotoolUI) saveSite() {
 		return
 	}
 	ui.sites = next
-	ui.refreshSiteList(site.Normalized().CompanyCode)
+	ui.refreshSiteList(site.Normalized().SiteID)
 	if updated {
-		ui.setStatus("Updated company " + site.Normalized().CompanyCode + ".")
+		ui.setStatus("Updated site " + site.Normalized().SiteID + ".")
 	} else {
-		ui.setStatus("Saved new company " + site.Normalized().CompanyCode + ".")
+		ui.setStatus("Saved new site " + site.Normalized().SiteID + ".")
 	}
+}
+
+// copySiteLink puts a shareable mikrotool: link for one saved site on the
+// clipboard. Opening it in a browser recreates the same record elsewhere.
+func (ui *mikrotoolUI) copySiteLink(site model.Site) {
+	link := deeplink.Link{Site: site}
+	ui.app.Clipboard().SetContent(link.String())
+	ui.setStatus("Copied the Mikrotool link for " + site.Normalized().SiteID + ".")
+}
+
+// openLink accepts a raw mikrotool: URL from any source and applies it on the
+// Fyne goroutine. It is safe to call before the application loop starts.
+func (ui *mikrotoolUI) openLink(raw string) {
+	link, err := deeplink.Parse(raw)
+	if err != nil {
+		ui.reportLinkError(err)
+		return
+	}
+	ui.applyLinkAsync(link)
+}
+
+func (ui *mikrotoolUI) applyLinkAsync(link deeplink.Link) {
+	fyne.Do(func() { ui.applyLink(link) })
+}
+
+func (ui *mikrotoolUI) reportLinkError(err error) {
+	fyne.Do(func() {
+		ui.setStatus("A Mikrotool link was rejected.")
+		ui.appendLog("Link rejected: " + err.Error())
+		dialog.ShowError(err, ui.window)
+	})
+}
+
+// applyLink saves the site a link describes, shows it on the main page, and
+// starts the connection the link asked for, if any.
+func (ui *mikrotoolUI) applyLink(link deeplink.Link) {
+	ui.mu.Lock()
+	closing := ui.closing
+	ui.mu.Unlock()
+	if closing {
+		ui.appendLog("A Mikrotool link arrived while Mikrotool was closing and was ignored.")
+		return
+	}
+	site := link.Site.Normalized()
+	next, updated, err := ui.sitesStore.Upsert(ui.sites, site)
+	if err != nil {
+		ui.setStatus("A Mikrotool link could not be saved.")
+		ui.appendLog("Link save failed: " + err.Error())
+		dialog.ShowError(err, ui.window)
+		return
+	}
+	ui.sites = next
+	ui.ipEntry.SetText(site.IP)
+	ui.siteIDEntry.SetText(site.SiteID)
+	ui.nameEntry.SetText(site.Name)
+	ui.showMainPage()
+	ui.refreshSiteList(site.SiteID)
+	if updated {
+		ui.setStatus("Link updated site " + site.SiteID + ".")
+	} else {
+		ui.setStatus("Link added site " + site.SiteID + ".")
+	}
+	ui.window.Show()
+	ui.window.RequestFocus()
+	switch link.Action {
+	case deeplink.ActionWinBox:
+		ui.openWinBox()
+	case deeplink.ActionWireGuard:
+		ui.connectWireGuardFromLink()
+	}
+}
+
+// connectWireGuardFromLink starts a session for a link without ever toggling an
+// existing one off, which is what the shared WireGuard button would do.
+func (ui *mikrotoolUI) connectWireGuardFromLink() {
+	ui.mu.Lock()
+	busy := ui.busy
+	active := ui.active != nil
+	ui.mu.Unlock()
+	if active {
+		ui.setStatus("WireGuard is already connected; the link did not start another session.")
+		return
+	}
+	if busy {
+		ui.setStatus("Mikrotool is busy; the link did not start a WireGuard session.")
+		return
+	}
+	ui.toggleWireGuard()
+}
+
+// showMainPage returns to the address book, releasing the Settings log label so
+// a link that arrives while Settings is open cannot keep refreshing it.
+func (ui *mikrotoolUI) showMainPage() {
+	ui.setSettingsLog(nil)
+	ui.window.SetContent(ui.mainPage())
 }
 
 func (ui *mikrotoolUI) editSiteValue(id, column int) {
@@ -376,9 +473,9 @@ func (ui *mikrotoolUI) editSiteValue(id, column int) {
 		return
 	}
 	site := ui.sites[id]
-	labels := []string{"IP Address", "Company Code", "Site Name"}
-	values := []string{site.IP, site.CompanyCode, site.Name}
-	ui.recordAction("Opened " + labels[column] + " editor for company " + site.CompanyCode + ".")
+	labels := []string{"IP Address", "Site ID", "Site Name"}
+	values := []string{site.IP, site.SiteID, site.Name}
+	ui.recordAction("Opened " + labels[column] + " editor for site " + site.SiteID + ".")
 	entry := widget.NewEntry()
 	entry.SetText(values[column])
 	dialog.ShowForm("Edit "+labels[column], "Save", "Cancel", []*widget.FormItem{
@@ -393,7 +490,7 @@ func (ui *mikrotoolUI) editSiteValue(id, column int) {
 		case 0:
 			edited.IP = entry.Text
 		case 1:
-			edited.CompanyCode = entry.Text
+			edited.SiteID = entry.Text
 		case 2:
 			edited.Name = entry.Text
 		}
@@ -403,8 +500,8 @@ func (ui *mikrotoolUI) editSiteValue(id, column int) {
 			return
 		}
 		for other := range ui.sites {
-			if other != id && model.SameCompanyCode(ui.sites[other].CompanyCode, edited.CompanyCode) {
-				err := fmt.Errorf("company code %q already exists", edited.CompanyCode)
+			if other != id && model.SameSiteID(ui.sites[other].SiteID, edited.SiteID) {
+				err := fmt.Errorf("site ID %q already exists", edited.SiteID)
 				ui.recordAction("Site edit failed: " + err.Error())
 				dialog.ShowError(err, ui.window)
 				return
@@ -418,7 +515,7 @@ func (ui *mikrotoolUI) editSiteValue(id, column int) {
 			return
 		}
 		ui.sites = next
-		ui.refreshSiteList(edited.Normalized().CompanyCode)
+		ui.refreshSiteList(edited.Normalized().SiteID)
 		ui.setStatus("Updated " + labels[column] + ".")
 	}, ui.window)
 }
@@ -802,7 +899,7 @@ func (ui *mikrotoolUI) toggleWireGuard() {
 		go ui.disconnect(active, true, true, "Disconnecting WireGuard…")
 		return
 	}
-	site := model.Site{IP: ui.ipEntry.Text, CompanyCode: ui.companyEntry.Text, Name: ui.nameEntry.Text}.Normalized()
+	site := model.Site{IP: ui.ipEntry.Text, SiteID: ui.siteIDEntry.Text, Name: ui.nameEntry.Text}.Normalized()
 	if runtime.GOOS == "darwin" && !ui.app.Preferences().Bool(prefMacAuthExplained) {
 		ui.recordAction("Displayed the macOS authorization explanation.")
 		message := "Mikrotool uses macOS's built-in osascript utility to request temporary administrator rights for the network changes required by WireGuard. macOS—not Mikrotool—collects your password. One authorization starts a temporary privileged session that also handles disconnect and cleanup; Mikrotool does not retain administrator access afterward."

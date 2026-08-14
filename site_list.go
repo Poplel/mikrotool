@@ -13,7 +13,7 @@ type siteSortField uint8
 
 const (
 	sortByIP siteSortField = iota
-	sortByCompanyCode
+	sortBySiteID
 	sortBySiteName
 )
 
@@ -55,8 +55,8 @@ func compareSites(left, right model.Site, field siteSortField) int {
 	switch field {
 	case sortByIP:
 		comparison = compareIP(left.IP, right.IP)
-	case sortByCompanyCode:
-		comparison = strings.Compare(strings.ToLower(left.CompanyCode), strings.ToLower(right.CompanyCode))
+	case sortBySiteID:
+		comparison = strings.Compare(strings.ToLower(left.SiteID), strings.ToLower(right.SiteID))
 	default:
 		comparison = strings.Compare(strings.ToLower(left.Name), strings.ToLower(right.Name))
 	}
@@ -66,7 +66,7 @@ func compareSites(left, right model.Site, field siteSortField) int {
 	if comparison = strings.Compare(strings.ToLower(left.Name), strings.ToLower(right.Name)); comparison != 0 {
 		return comparison
 	}
-	if comparison = strings.Compare(strings.ToLower(left.CompanyCode), strings.ToLower(right.CompanyCode)); comparison != 0 {
+	if comparison = strings.Compare(strings.ToLower(left.SiteID), strings.ToLower(right.SiteID)); comparison != 0 {
 		return comparison
 	}
 	return compareIP(left.IP, right.IP)
@@ -101,7 +101,7 @@ func closestSiteIndex(sites []model.Site, query string) int {
 	for index, site := range sites {
 		candidates := []string{
 			strings.ToLower(site.Name),
-			strings.ToLower(site.CompanyCode),
+			strings.ToLower(site.SiteID),
 			strings.ToLower(site.IP),
 		}
 		for fieldIndex, candidate := range candidates {
