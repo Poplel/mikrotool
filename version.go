@@ -2,6 +2,6 @@ package main
 
 const (
 	appName    = "Mikrotool"
-	appVersion = "2.1.0"
+	appVersion = "2.2.0"
 	appID      = "com.wirestar.mikrotool"
 )

@@ -79,7 +79,7 @@ func TestLicensesAboutPageIsEmbeddedAndLogged(t *testing.T) {
 		}
 	}
 	if !strings.Contains(aboutMikrotool, "Made by Elan Fergusson") ||
-		!strings.Contains(aboutMikrotool, "Mikrotool v2.1") {
+		!strings.Contains(aboutMikrotool, "Mikrotool v2.2") {
 		t.Fatal("about text is missing the author or display version")
 	}
 
@@ -95,7 +95,7 @@ func TestLicensesAboutPageIsEmbeddedAndLogged(t *testing.T) {
 		t.Fatalf("opening licenses/about was not logged: %q", text)
 	}
 	allText := licensesAboutText()
-	if !strings.HasPrefix(allText, `Mikrotool v2.1
+	if !strings.HasPrefix(allText, `Mikrotool v2.2
 Made by Elan Fergusson
 Mikrotool is a virtual address book for Mikrotik routers, allowing you to quickly access sites via WinBox or WireGuard without any lengthy setup.
 

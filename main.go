@@ -9,6 +9,7 @@ import (
 	"fyne.io/fyne/v2/app"
 
 	"mikrotool/internal/deeplink"
+	"mikrotool/internal/dock"
 )
 
 func main() {
@@ -20,11 +21,16 @@ func main() {
 
 	// A mikrotool: link opens a second process on Windows. Hand the link to the
 	// copy that already owns the data directory and stop, so one instance keeps
-	// managing the site list and any live tunnel.
+	// managing the site list and any live tunnel. A plain second launch asks
+	// that copy to reopen its window, which may be closed to the tray.
 	launchLink := deeplink.LinkArgument(os.Args[1:])
 	releaseInstance, primary := deeplink.AcquirePrimary(dataDir)
-	if !primary && launchLink != "" {
-		if deliverErr := deeplink.Deliver(dataDir, launchLink); deliverErr == nil {
+	if !primary {
+		if launchLink != "" {
+			if deliverErr := deeplink.Deliver(dataDir, launchLink); deliverErr == nil {
+				return
+			}
+		} else if showErr := deeplink.RequestShow(dataDir); showErr == nil {
 			return
 		}
 	}
@@ -47,11 +53,15 @@ func main() {
 	}
 	window.SetContent(ui.mainPage())
 	window.Resize(fyne.NewSize(820, 760))
-	window.SetCloseIntercept(ui.requestClose)
+	window.SetCloseIntercept(ui.hideWindow)
 	window.Show()
+	ui.installTray()
+	// AppKit installs its own Apple Event handlers while launching, so take
+	// over the reopen event only once the app has started.
+	application.Lifecycle().SetOnStarted(func() { dock.OnReopen(ui.showWindow) })
 	ui.recoverInterruptedSession()
 	if primary {
-		stopListening := deeplink.Listen(dataDir, ui.applyLinkAsync, ui.reportLinkError)
+		stopListening := deeplink.Listen(dataDir, ui.applyLinkAsync, ui.reportLinkError, func() { fyne.Do(ui.showWindow) })
 		defer stopListening()
 	}
 	if launchLink != "" {

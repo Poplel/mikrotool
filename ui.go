@@ -21,6 +21,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"mikrotool/internal/deeplink"
+	"mikrotool/internal/dock"
 	"mikrotool/internal/inputcheck"
 	"mikrotool/internal/model"
 	"mikrotool/internal/router"
@@ -39,6 +40,7 @@ const (
 )
 
 type activeConnection struct {
+	site       model.Site
 	peer       router.Peer
 	tunnel     tunnel.Session
 	connection router.Connection
@@ -69,11 +71,15 @@ type mikrotoolUI struct {
 	sortField     siteSortField
 	sortAscending bool
 
-	mu            sync.Mutex
-	busy          bool
-	active        *activeConnection
-	closing       bool
-	connectCancel context.CancelFunc
+	mu             sync.Mutex
+	busy           bool
+	active         *activeConnection
+	closing        bool
+	connectCancel  context.CancelFunc
+	connectingSite model.Site
+
+	tray          trayHost
+	traySignature string
 
 	settingsSaveMu sync.Mutex
 	settingsLogMu  sync.Mutex
@@ -107,7 +113,7 @@ func newMikrotoolUI(application fyne.App, window fyne.Window, dataDir string) *m
 	})
 	ui.loadSites()
 	ui.createSiteList()
-	ui.recordAction("Mikrotool v2.1 started.")
+	ui.recordAction("Mikrotool v" + appVersion + " started.")
 	return ui
 }
 
@@ -267,6 +273,7 @@ func (ui *mikrotoolUI) setSiteSort(field siteSortField) {
 
 func (ui *mikrotoolUI) refreshSiteList(selectSiteID string) {
 	ui.siteRows = buildSiteListRows(ui.sites, ui.sortField, ui.sortAscending)
+	ui.refreshTray()
 	ui.siteList.Refresh()
 	ui.siteList.UnselectAll()
 	if selectSiteID == "" {
@@ -337,7 +344,7 @@ func (ui *mikrotoolUI) deleteSite(siteID string) {
 	}
 	if err := ui.sitesStore.Save(next); err != nil {
 		ui.recordAction("Site deletion failed: " + err.Error())
-		dialog.ShowError(err, ui.window)
+		ui.showError(err)
 		return
 	}
 	ui.sites = next
@@ -361,7 +368,7 @@ func (ui *mikrotoolUI) saveSite() {
 	next, updated, err := ui.sitesStore.Upsert(ui.sites, site)
 	if err != nil {
 		ui.recordAction("Site save failed: " + err.Error())
-		dialog.ShowError(err, ui.window)
+		ui.showError(err)
 		return
 	}
 	ui.sites = next
@@ -400,7 +407,7 @@ func (ui *mikrotoolUI) reportLinkError(err error) {
 	fyne.Do(func() {
 		ui.setStatus("A Mikrotool link was rejected.")
 		ui.appendLog("Link rejected: " + err.Error())
-		dialog.ShowError(err, ui.window)
+		ui.showError(err)
 	})
 }
 
@@ -419,7 +426,7 @@ func (ui *mikrotoolUI) applyLink(link deeplink.Link) {
 	if err != nil {
 		ui.setStatus("A Mikrotool link could not be saved.")
 		ui.appendLog("Link save failed: " + err.Error())
-		dialog.ShowError(err, ui.window)
+		ui.showError(err)
 		return
 	}
 	ui.sites = next
@@ -433,8 +440,7 @@ func (ui *mikrotoolUI) applyLink(link deeplink.Link) {
 	} else {
 		ui.setStatus("Link added site " + site.SiteID + ".")
 	}
-	ui.window.Show()
-	ui.window.RequestFocus()
+	ui.showWindow()
 	switch link.Action {
 	case deeplink.ActionWinBox:
 		ui.openWinBox()
@@ -496,14 +502,14 @@ func (ui *mikrotoolUI) editSiteValue(id, column int) {
 		}
 		if err := edited.Validate(); err != nil {
 			ui.recordAction("Site edit validation failed: " + err.Error())
-			dialog.ShowError(err, ui.window)
+			ui.showError(err)
 			return
 		}
 		for other := range ui.sites {
 			if other != id && model.SameSiteID(ui.sites[other].SiteID, edited.SiteID) {
 				err := fmt.Errorf("site ID %q already exists", edited.SiteID)
 				ui.recordAction("Site edit failed: " + err.Error())
-				dialog.ShowError(err, ui.window)
+				ui.showError(err)
 				return
 			}
 		}
@@ -511,7 +517,7 @@ func (ui *mikrotoolUI) editSiteValue(id, column int) {
 		next[id] = edited.Normalized()
 		if err := ui.sitesStore.Save(next); err != nil {
 			ui.recordAction("Site edit could not be saved: " + err.Error())
-			dialog.ShowError(err, ui.window)
+			ui.showError(err)
 			return
 		}
 		ui.sites = next
@@ -525,7 +531,7 @@ func (ui *mikrotoolUI) showImport() {
 	fileDialog := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
 		if err != nil {
 			ui.recordAction("Import picker failed: " + err.Error())
-			dialog.ShowError(err, ui.window)
+			ui.showError(err)
 			return
 		}
 		if reader == nil {
@@ -536,7 +542,7 @@ func (ui *mikrotoolUI) showImport() {
 		if validationErr != nil {
 			_ = reader.Close()
 			ui.recordAction("Import rejected: " + validationErr.Error())
-			dialog.ShowError(validationErr, ui.window)
+			ui.showError(validationErr)
 			return
 		}
 		extension := strings.ToLower(reader.URI().Extension())
@@ -558,7 +564,7 @@ func (ui *mikrotoolUI) showImport() {
 				fyne.Do(func() {
 					ui.setStatus("Import failed.")
 					ui.appendLog("Import failed: " + parseErr.Error())
-					dialog.ShowError(parseErr, ui.window)
+					ui.showError(parseErr)
 				})
 				return
 			}
@@ -567,7 +573,7 @@ func (ui *mikrotoolUI) showImport() {
 				fyne.Do(func() {
 					ui.setStatus("Import failed while saving.")
 					ui.appendLog("Imported sites could not be saved: " + err.Error())
-					dialog.ShowError(err, ui.window)
+					ui.showError(err)
 				})
 				return
 			}
@@ -601,7 +607,7 @@ func (ui *mikrotoolUI) showExport() {
 	fileDialog := dialog.NewFileSave(func(writer fyne.URIWriteCloser, err error) {
 		if err != nil {
 			ui.recordAction("Export picker failed: " + err.Error())
-			dialog.ShowError(err, ui.window)
+			ui.showError(err)
 			return
 		}
 		if writer == nil {
@@ -615,7 +621,7 @@ func (ui *mikrotoolUI) showExport() {
 		if validationErr != nil {
 			_ = writer.Close()
 			ui.recordAction("Export rejected: " + validationErr.Error())
-			dialog.ShowError(validationErr, ui.window)
+			ui.showError(validationErr)
 			return
 		}
 		ui.setStatus("Exporting sites…")
@@ -626,7 +632,7 @@ func (ui *mikrotoolUI) showExport() {
 				if exportErr != nil {
 					ui.setStatus("CSV export failed.")
 					ui.appendLog("CSV export failed: " + exportErr.Error())
-					dialog.ShowError(exportErr, ui.window)
+					ui.showError(exportErr)
 					return
 				}
 				message := fmt.Sprintf("Exported %d site(s) to %s.", len(sites), fileName)
@@ -705,7 +711,7 @@ func (ui *mikrotoolUI) showSettings() {
 			fileDialog := dialog.NewFileOpen(func(reader fyne.URIReadCloser, err error) {
 				if err != nil {
 					ui.recordAction("WinBox executable picker failed: " + err.Error())
-					dialog.ShowError(err, ui.window)
+					ui.showError(err)
 					return
 				}
 				if reader == nil {
@@ -717,13 +723,13 @@ func (ui *mikrotoolUI) showSettings() {
 				if !strings.EqualFold(selectedURI.Scheme(), "file") {
 					err := fmt.Errorf("WinBox executable must be selected from a local drive")
 					ui.recordAction("WinBox executable selection rejected: " + err.Error())
-					dialog.ShowError(err, ui.window)
+					ui.showError(err)
 					return
 				}
 				selectedPath := selectedURI.Path()
 				if err := winbox.ValidateExecutablePath(selectedPath); err != nil {
 					ui.recordAction("WinBox executable selection rejected: " + err.Error())
-					dialog.ShowError(err, ui.window)
+					ui.showError(err)
 					return
 				}
 				winboxPath.SetText(selectedPath)
@@ -852,10 +858,16 @@ func (ui *mikrotoolUI) connectionSettings(host string) (router.Connection, error
 }
 
 func (ui *mikrotoolUI) openWinBox() {
-	connection, err := ui.connectionSettings(ui.ipEntry.Text)
+	ui.openWinBoxFor(ui.ipEntry.Text)
+}
+
+// openWinBoxFor opens WinBox on one router with the saved SSH credentials. The
+// main page passes the IP field; the tray passes a saved site.
+func (ui *mikrotoolUI) openWinBoxFor(host string) {
+	connection, err := ui.connectionSettings(host)
 	if err != nil {
 		ui.recordAction("WinBox could not be opened: " + err.Error())
-		dialog.ShowError(err, ui.window)
+		ui.showError(err)
 		return
 	}
 	launcher := winbox.Launcher{Executable: ui.app.Preferences().String(prefWinBoxPath)}
@@ -866,7 +878,7 @@ func (ui *mikrotoolUI) openWinBox() {
 			if err != nil {
 				ui.setStatus("WinBox could not be opened.")
 				ui.appendLog("WinBox launch failed: " + err.Error())
-				dialog.ShowError(err, ui.window)
+				ui.showError(err)
 				return
 			}
 			ui.setStatus("WinBox opened for " + connection.Host + ".")
@@ -899,8 +911,16 @@ func (ui *mikrotoolUI) toggleWireGuard() {
 		go ui.disconnect(active, true, true, "Disconnecting WireGuard…")
 		return
 	}
-	site := model.Site{IP: ui.ipEntry.Text, SiteID: ui.siteIDEntry.Text, Name: ui.nameEntry.Text}.Normalized()
+	ui.connectWireGuard(model.Site{IP: ui.ipEntry.Text, SiteID: ui.siteIDEntry.Text, Name: ui.nameEntry.Text})
+}
+
+// connectWireGuard starts a session to site, first explaining the macOS
+// authorization prompt if it has never been shown. The caller has already
+// checked that no session is active or in progress.
+func (ui *mikrotoolUI) connectWireGuard(site model.Site) {
+	site = site.Normalized()
 	if runtime.GOOS == "darwin" && !ui.app.Preferences().Bool(prefMacAuthExplained) {
+		ui.showWindow()
 		ui.recordAction("Displayed the macOS authorization explanation.")
 		message := "Mikrotool uses macOS's built-in osascript utility to request temporary administrator rights for the network changes required by WireGuard. macOS—not Mikrotool—collects your password. One authorization starts a temporary privileged session that also handles disconnect and cleanup; Mikrotool does not retain administrator access afterward."
 		dialog.ShowConfirm("macOS Authorization", message+"\n\nContinue?", func(ok bool) {
@@ -926,6 +946,7 @@ func (ui *mikrotoolUI) startWireGuard(site model.Site) {
 	}
 	ui.busy = true
 	ui.connectCancel = cancel
+	ui.connectingSite = site
 	ui.mu.Unlock()
 	ui.setWireGuardState("Cancel Connection", true)
 	go ui.beginWireGuard(ctx, site)
@@ -965,6 +986,7 @@ func (ui *mikrotoolUI) beginWireGuard(parent context.Context, site model.Site) {
 		return
 	}
 	fyne.Do(func() {
+		ui.showWindow()
 		selectWidget := widget.NewSelect(info.Interfaces, nil)
 		selectWidget.SetSelected(info.Interfaces[0])
 		dialog.ShowCustomConfirm("Choose WireGuard Interface", "Connect", "Cancel", container.NewVBox(
@@ -1035,7 +1057,7 @@ func (ui *mikrotoolUI) provision(parent context.Context, site model.Site, connec
 		ui.failOperation(errors.Join(fmt.Errorf("update crash-recovery state: %w", err), stopErr, cleanupErr))
 		return
 	}
-	active := &activeConnection{peer: peer, tunnel: tunnelSession, connection: connection}
+	active := &activeConnection{site: site, peer: peer, tunnel: tunnelSession, connection: connection}
 	ui.mu.Lock()
 	cancelled := ui.connectCancel == nil || parent.Err() != nil
 	if cancelled {
@@ -1100,7 +1122,7 @@ func (ui *mikrotoolUI) disconnect(active *activeConnection, stopLocal, showPopup
 			ui.setStatus("WireGuard stopped with cleanup warnings.")
 			ui.appendLog("Cleanup warning: " + err.Error())
 			if showPopup {
-				dialog.ShowError(err, ui.window)
+				ui.showError(err)
 			}
 		} else {
 			ui.setStatus("WireGuard disconnected; transient peer removed.")
@@ -1173,6 +1195,7 @@ func (ui *mikrotoolUI) recoverInterruptedSession() {
 		Password: password, KnownHosts: ui.knownHosts,
 	}
 	active := &activeConnection{
+		site:       model.Site{IP: value.Host},
 		peer:       router.Peer{Host: value.Host, SSHPort: value.SSHPort, Username: value.Username, Name: value.PeerName, PublicKey: value.PublicKey},
 		tunnel:     tunnel.Session{Name: value.TunnelName, Interface: value.Interface, ConfigPath: value.ConfigPath, PublicKey: value.PublicKey},
 		connection: connection,
@@ -1198,7 +1221,7 @@ func (ui *mikrotoolUI) handleSSHError(err error) {
 			expected = strings.Join(changed.Expected, "\n")
 		}
 		message := fmt.Sprintf("The SSH host key for %s does not match.\n\nExpected:\n%s\n\nReceived:\n%s\n\nThe connection was blocked. Verify the router before changing its saved key.", changed.Host, expected, changed.Fingerprint)
-		dialog.ShowError(errors.New(message), ui.window)
+		ui.showError(errors.New(message))
 	})
 }
 
@@ -1219,6 +1242,7 @@ func (ui *mikrotoolUI) requestClose() {
 		ui.busy = true
 	}
 	ui.mu.Unlock()
+	ui.refreshTray()
 	if busy && active == nil && cancel != nil {
 		cancel()
 		ui.setWireGuardState("Cancelling…", false)
@@ -1242,7 +1266,7 @@ func (ui *mikrotoolUI) failOperation(err error) {
 	fyne.Do(func() {
 		ui.completeOperation(err)
 		if !errors.Is(err, context.Canceled) {
-			dialog.ShowError(err, ui.window)
+			ui.showError(err)
 		}
 	})
 }
@@ -1286,6 +1310,7 @@ func (ui *mikrotoolUI) cancelConnection() {
 }
 
 func (ui *mikrotoolUI) setWireGuardState(text string, enabled bool) {
+	ui.refreshTray()
 	if ui.wgButton == nil {
 		return
 	}
@@ -1310,6 +1335,34 @@ func (ui *mikrotoolUI) setStatus(text string) {
 	ui.recordAction(text)
 }
 func (ui *mikrotoolUI) setStatusAsync(text string) { fyne.Do(func() { ui.setStatus(text) }) }
+
+// showError reports err in the main window, reopening it first: an action
+// started from the tray may fail while no window is open.
+func (ui *mikrotoolUI) showError(err error) {
+	ui.showWindow()
+	dialog.ShowError(err, ui.window)
+}
+
+// showWindow brings the main window back, including its Dock icon on macOS.
+func (ui *mikrotoolUI) showWindow() {
+	dock.SetVisible(true)
+	ui.window.Show()
+	ui.window.RequestFocus()
+}
+
+// hideWindow closes the main window to the tray. Mikrotool keeps running, and
+// keeps any WireGuard session up, until Quit is chosen from the tray menu.
+func (ui *mikrotoolUI) hideWindow() {
+	ui.window.Hide()
+	dock.SetVisible(false)
+	// Quitting from macOS also closes the window; that is not a close to the tray.
+	ui.mu.Lock()
+	closing := ui.closing
+	ui.mu.Unlock()
+	if !closing {
+		ui.recordAction("Window closed; Mikrotool is still running in the " + trayPlaceName() + ".")
+	}
+}
 
 func (ui *mikrotoolUI) appendLog(text string) {
 	ui.recordAction(text)

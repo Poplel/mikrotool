@@ -36,7 +36,7 @@ var wireguardGoLicense string
 //go:embed licenses/Bash-GPL-3.0-or-later.txt
 var bashLicense string
 
-const aboutMikrotool = `Mikrotool v2.1
+const aboutMikrotool = `Mikrotool v2.2
 Made by Elan Fergusson
 Mikrotool is a virtual address book for Mikrotik routers, allowing you to quickly access sites via WinBox or WireGuard without any lengthy setup.
 
